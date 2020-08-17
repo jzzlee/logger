@@ -5,7 +5,7 @@ import functions
 
 class Dependency(object):
 
-	def getArgument(self, i):
+	def getArgument(self, i, typ):
 		pass
 
 	def verifyArgument(self, i):
@@ -16,6 +16,9 @@ class Dependency(object):
 
 	def verifyProperty(self, i):
 		pass
+
+	def getContainer(self):
+		return Container
 
 
 class Component(object):
@@ -29,14 +32,25 @@ class Component(object):
 	def verify(self, dep):
 		pass
 
+	def bind(self, binder):
+		pass
+
 
 class Container(object):
 
-	def getComponent(self, key):
-		raise NotImplementedError
+	Components = {}
 
-	def getComponentOfType(self, typ):
-		raise NotImplementedError
+	@staticmethod
+	def getComponent(key):
+		return Container.Components.get(key, None)
+
+	@staticmethod
+	def addComponent(key, com):
+		Container.Components[key] = com
+
+	@staticmethod
+	def getComponentOfType(typ):
+		pass
 
 
 class ValueComponent(Component):
@@ -67,13 +81,20 @@ class FunctionComponent(Component):
 		:type dep: Dependency
 		"""
 		count = self.function.getParameterCount()
-		args = [dep.getArgument(i) for i in range(count)]
+		args = [dep.getArgument(i, None) for i in range(count)]
 		return self.function.call(*args)
 
 	def verify(self, dep):
 		count = self.function.getParameterCount()
 		verified = all(dep.verifyArgument(i) for i in xrange(count))
 		return self.function.getReturnType()
+
+	def bind(self, binder):
+		"""
+		:type binder: ParameterBinder
+		:return:
+		"""
+		return ValueComponent(self.create(ParameterBinderDependency(None, binder)))
 
 
 class BeanComponent(Component):
@@ -91,59 +112,29 @@ class BeanComponent(Component):
 		return self.getType()
 
 
-class WithArgumentComponent(Component):
-	def __init__(self, parent, pos, arg):
-		self.parent = parent
-		self.pos = pos
-		self.arg = arg
+class UseKeyComponent(Component):
 
-	def getType(self):
-		return self.parent.getType()
+	def __init__(self, key):
+		self.key = key
 
 	def create(self, dep):
-		return self.parent.create(self.withArg(dep))
-
-	def verify(self, dep):
-		return self.parent.verify(self.withArg(dep))
-
-	def withArg(self, dep):
-		pos = self.pos
-		arg = self.arg
-		class _Dependency(Dependency):
-			def getArgument(self, i):
-				if i == pos:
-					return arg.create(dep)
-				else:
-					return dep.getArgument(i)
-
-		return _Dependency()
+		"""
+		:type dep: Dependency
+		"""
+		c = dep.getContainer().getComponent(self.key)   # type: Component
+		if c is None:
+			raise KeyError('component key %s not found' % self.key)
+		return c.create(dep)
 
 
-class WithPropertyComponent(Component):
+class UseArgumentComponent(Component):
 
-	def __init__(self, parent, key, prop):
-		self.parent = parent    # type: Component
-		self.key = key          # type: str
-		self.prop = prop        # type: Component
-
-	def getType(self):
-		return self.parent.getType()
+	def __init__(self, i, typ):
+		self.index = i
+		self.typ = typ
 
 	def create(self, dep):
-		return self.parent.create(self.withProp(dep))
-
-	def verify(self, dep):
-		return self.parent.verify(self.withProp(dep))
-
-	def withProp(self, dep):
-		def getProp(_, k, typ, this=self):
-			if k == self.key:
-				return self.prop.create(dep)
-			else:
-				return dep.getProperty(k, typ)
-
-		ndep = Dependency()
-		ndep.getProperty = getProp
+		return dep.getArgument(self.index, self.typ)
 
 
 class Map(object):
@@ -232,3 +223,69 @@ class Components(object):
 	@staticmethod
 	def value(obj):
 		return ValueComponent(obj)
+
+	@staticmethod
+	def use_key(key):
+		return UseKeyComponent(key)
+
+	@staticmethod
+	def use_argument(i, typ):
+		return UseArgumentComponent(i, typ)
+
+	@staticmethod
+	def with_argument(com, i, arg):
+		"""
+		:type com: Component
+		:param i:
+		:type arg: Component
+		:return:
+		"""
+		class _ParameterBinder(ParameterBinder):
+			def bind(self, k, typ):
+				if k == i:
+					return arg
+				else:
+					return Components.use_argument(k, typ)
+		return com.bind(_ParameterBinder())
+
+	@staticmethod
+	def with_arguments(com, args):
+		"""
+		:type com: Component
+		:type args: list of Component
+		:return:
+		"""
+		class _ParameterBinder(ParameterBinder):
+			def bind(self, i, typ):
+				return args[i]
+		return com.bind(_ParameterBinder())
+
+
+class ParameterBinder(object):
+
+	def bind(self, i, typ):
+		"""
+		:param i:
+		:return: Component
+		"""
+		pass
+
+
+class ParameterBinderDependency(Dependency):
+	def __init__(self, dep, binder):
+		self.dep = dep          # type: Dependency
+		self.binder = binder    # type: ParameterBinder
+
+	def getArgument(self, i, typ):
+		return self.binder.bind(i, typ).create(self.dep)
+
+
+class ParameterBinderComponent(Component):
+
+	def __init__(self, com, binder):
+		self.com = com          # type: Component
+		self.binder = binder    # type: ParameterBinder
+
+	def create(self, dep):
+		return self.com.create(ParameterBinderDependency(dep, self.binder))
+
